@@ -109,4 +109,3 @@ class scraper:
 if __name__ == "__main__":
     s = scraper("https://liquipedia.net/leagueoflegends/Portal:Teams")
     s.collect_all_data()
-    
