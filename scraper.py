@@ -1,16 +1,71 @@
 import requests
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.common.by import By
 import uuid
 import os
 import json
 import urllib.request
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
 
 class scraper:
+
+    '''
+    A scraper class that takes in a specific website ("https://liquipedia.net/leagueoflegends/Portal:Teams") 
+    and automatically scrapes all team and player information of said teams as well as downloads their logos.
+    
+    Parameters:
+    ----------
+    URL: str
+        URL of the teams in each region ("https://liquipedia.net/leagueoflegends/Portal:Teams")
+    
+    Attributes:
+    ----------
+    driver: webdriver
+        The webdriver used from selenium. In this case, it is a chromedriver.
+    all_links: list
+        A list of lists with each nested list containing all the team links from each region on the webpage.
+    regions: str
+        List of all regions listed on the webpage.
+
+    Methods:
+    -------
+    __click_link(URL)
+        Click on the link
+    __find_all_links(URL) --> list
+        Returns all the links on the webpage for each team as a list
+    __collect_team_data(soup) --> dict
+        Returns a dictionary containing all the teams data from a given BeautifulSoup of the webpage
+    __collect_player_data(soup) --> dict
+        Returns a dictionary containing all the players data from a given BeautifulSoup of the webpage
+    __collect_image_data() --> str
+        Returns a dictionary containing the logo of the team
+    __generate_id() --> list
+        Returns a list of the name of the team and a UUID4 value
+    __save_image_data(data, region)
+        Saves the logo of the team to a folder named of the team's region 
+    __save_text_data(all_data)
+        Saves the text data of all teams to a file named data.json 
+    __collect_data(URL) --> dict
+        Returns a dictionary of all text and image data collected
+    collect_all_data()
+        Collects and saves all data on the teams from the original webpage
+
+    '''
+
     def __init__(self, URL):
+        '''
+        Initializes an object of the class.
+        Creates a new webdriver object and finds all the links from the given webpage
+        Creates the necessary folder for the data to be saved in (raw_data, images, and folders named after the regions)
+        
+        Parameters:
+        ----------
+        letter: str
+            Webpage that the data is collected from
+
+        '''
         self.driver = webdriver.Chrome()
-        self.links = self.find_links(URL)
+        self.all_links = self.__find_all_links(URL)
         page = requests.get(URL)
         soup = BeautifulSoup(page.text, 'html.parser')
         self.regions = soup.find_all(name = "div", attrs = {"class": "panel-box-heading"})
@@ -22,28 +77,62 @@ class scraper:
             if not os.path.exists("raw_data\images\\" + r.text):
                 os.makedirs("raw_data\images\\" + r.text)
 
-    def click_link(self, URL):
-        self.driver.get(URL)
-    
-    def scroll_to_bottom(self):
-        self.driver.execute_script("window.scrollTo(0,document.body.scrollHeight)")
+    def __click_link(self, URL):
+        '''
+        Clicks on the given link
+        
+        Parameters:
+        ----------
+        letter: str
+            URL to be traversed to
 
-    def find_links(self, URL):
-        self.click_link(URL)
-        content = self.driver.find_element(by=By.XPATH, value='//*[@id="mw-content-text"]')
-        tables = content.find_elements(by=By.CLASS_NAME, value="panel-box-body")
+        '''
+        self.driver.get(URL)
+
+    def __find_all_links(self, URL):
+        '''
+        Finds all the links of each team in each region from the given webpage
+        
+        Parameters:
+        ----------
+        URL: str
+            Webpage that the links are collected from
+
+        Returns:
+        ----------
+        link: list
+            List of lists with each nested list containing all teams from a specific region
+
+        '''
+        self.__click_link(URL)
+        site_content = self.driver.find_element(by=By.XPATH, value='//*[@id="mw-content-text"]')
+        region_tables = site_content.find_elements(by=By.CLASS_NAME, value="panel-box-body")
         links = []
-        for t in tables:
+        for region in region_tables:
             teams_in_region = []
-            teams = t.find_elements(by=By.CLASS_NAME, value="team-template-text")
-            for team in teams:
+            team_links = region.find_elements(by=By.CLASS_NAME, value="team-template-text")
+            for team in team_links:
                 a_tag = team.find_element(by=By.TAG_NAME, value='a')
                 link = a_tag.get_attribute('href')
                 teams_in_region.append(link)
             links.append(teams_in_region)
         return links
 
-    def collect_team_data(self, soup):
+    def __collect_team_data(self, soup):
+        '''
+        Collects the team's data from the right side box section of the webpage 
+        
+        Parameters:
+        ----------
+        URL: str
+            The BeautifulSoup of the webpage that the data is collected from
+        
+        Returns:
+        ----------
+        info_dict: dict
+            Dictionary with the team's data
+
+        '''
         side_box = soup.find(name = "div", attrs = {"class": "fo-nttax-infobox"})
         side_info = side_box.find_all(name = "div", attrs = {"class": "infobox-cell-2"})
         info_dict = {}
@@ -51,17 +140,40 @@ class scraper:
             info_dict[info.text.replace("\xa0", " ")] = side_info[side_info.index(info)+1].text.replace("\xa0", " ")
         return info_dict
     
-    def collect_player_data(self, soup):
+    def __collect_player_data(self, soup):
+        '''
+        Collects the team's players' data from the main content section of the webpage 
+        
+        Parameters:
+        ----------
+        letter: str
+            The BeautifulSoup of the webpage that the data is collected from
+        
+        Returns:
+        ----------
+        info_dict: dict
+            Dictionary containing the data on each player of a given team
+
+        '''
         player_box = soup.find(name = "div", attrs = {"class": "table-responsive"})
         players = player_box.find_all(name = "tr", attrs = {"class": "Player"})
         info_dict = {}
-        for p in players:
-            p_row = p.find_all("td")
+        for player in players:
+            p_row = player.find_all("td")
             player_dict = {"ID": p_row[0].text.replace("\xa0", " "), "Name": p_row[2].text.replace("\xa0", " ")}
             info_dict[p_row[3].text.replace("\xa0", " ")] = player_dict
         return info_dict
 
-    def collect_image_data(self):
+    def __collect_image_data(self):
+        '''
+        Collects the team's logo's link from the right side box section of the webpage 
+
+        Returns:
+        ----------
+        src: str
+            Link to the original version of the team's logo
+
+        '''
         content = self.driver.find_element(by=By.XPATH, value='//*[@id="mw-content-text"]')
         image_link = content.find_element(by=By.CLASS_NAME, value="image")
         link = image_link.get_attribute("href")
@@ -71,40 +183,75 @@ class scraper:
         src = a_tag.get_attribute("href")
         return src
 
-    def generate_id(self):
+    def __generate_id(self):
+        '''
+        Generates a unique 
+         
+        Returns:
+        ----------
+        list: list
+            List containing the team's name and the UUID4 value, each acting as unique IDs
+
+        '''
         content = self.driver.find_element(by=By.XPATH, value='//*[@id="firstHeading"]')
         return [content.text, str(uuid.uuid4())]
     
-    def save_image_data(self, data, region):
+    def __save_image_data(self, data, region):
+        '''
+        Saves the logo of the team to a folder with the respective region of the team
+
+        '''
         urllib.request.urlretrieve(data["Logo Data"], "raw_data\images\\" + region  + "\\" + data["ID"][0] + ".png")
 
-    def save_text_data(self, all_data):
+    def __save_text_data(self, all_data):
+        '''
+        Saves the data on all teams from all regions to a file named 'data.json'
+
+        '''
         with open('raw_data\data.json', 'w') as f:
             json.dump(all_data, f)
 
-    def collect_data(self, URL):
+    def __collect_data(self, URL):
+        '''
+        Collects all data regarding a specific team from a given webpage 
+        
+        Parameters:
+        ----------
+        URL: str
+            The webpage the data is collected from
+        
+        Returns:
+        ----------
+        data: dict
+            Dictionary containing the congragated data on each team (team and players' data as well as the source link for their logo)
+
+        '''
         page = requests.get(URL)
         soup = BeautifulSoup(page.text, 'html.parser')
         data = {}
-        data["ID"] = self.generate_id()
-        data["Team Data"] = self.collect_team_data(soup)
-        data["Players Data"] = self.collect_player_data(soup)
-        data["Logo Data"] = self.collect_image_data()
+        data["ID"] = self.__generate_id()
+        data["Team Data"] = self.__collect_team_data(soup)
+        data["Players Data"] = self.__collect_player_data(soup)
+        data["Logo Data"] = self.__collect_image_data()
         return data
 
     def collect_all_data(self):
+        '''
+        Collects all the teams' data and saves the data to their corresponding files/folders
+
+        '''
         i = 0
         all_data = {}
-        for links in self.links:
+        for links in self.all_links:
             curr_region = self.regions[i].text
             all_data[curr_region] = []
             for link in links:
-                self.click_link(link)
-                data = s.collect_data(link)
-                s.save_image_data(data, curr_region)
+                self.__click_link(link)
+                data = self.__collect_data(link)
+                self.__save_image_data(data, curr_region)
                 all_data[curr_region].append(data)
             i += 1
-        self.save_text_data(all_data)
+        self.__save_text_data(all_data)
 
 if __name__ == "__main__":
     s = scraper("https://liquipedia.net/leagueoflegends/Portal:Teams")
