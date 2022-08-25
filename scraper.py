@@ -3,6 +3,7 @@ import uuid
 import os
 import json
 import urllib.request
+import boto3 
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -52,11 +53,10 @@ class scraper:
 
     '''
 
-    def __init__(self, URL):
+    def __init__(self):
         '''
         Initializes an object of the class.
-        Creates a new webdriver object and finds all the links from the given webpage
-        Creates the necessary folder for the data to be saved in (raw_data, images, and folders named after the regions)
+        Creates a new webdriver object.
         
         Parameters:
         ----------
@@ -65,17 +65,6 @@ class scraper:
 
         '''
         self.driver = webdriver.Chrome()
-        self.all_links = self.__find_all_links(URL)
-        page = requests.get(URL)
-        soup = BeautifulSoup(page.text, 'html.parser')
-        self.regions = soup.find_all(name = "div", attrs = {"class": "panel-box-heading"})
-        if not os.path.exists("raw_data"):
-            os.makedirs("raw_data")
-        if not os.path.exists("raw_data\images"):
-            os.makedirs("raw_data\images")
-        for r in self.regions:
-            if not os.path.exists("raw_data\images\\" + r.text):
-                os.makedirs("raw_data\images\\" + r.text)
 
     def __click_link(self, URL):
         '''
@@ -89,7 +78,45 @@ class scraper:
         '''
         self.driver.get(URL)
 
-    def __find_all_links(self, URL):
+    def get_regions(self, URL):
+        '''
+        Returns a list of regions on the main webpage
+        
+        Parameters:
+        ----------
+        URL: str
+            Webpage that the information are collected from
+
+        Returns:
+        ----------
+        regions: list
+            List of all the regions found on the main webpage
+
+        '''
+        page = requests.get(URL)
+        soup = BeautifulSoup(page.text, 'html.parser')
+        regions = soup.find_all(name = "div", attrs = {"class": "panel-box-heading"})
+        return regions
+
+    def create_folders(self, regions):
+        '''
+        Creates the necessary folder for the data to be saved in (raw_data, images, and folders named after the regions)
+        
+        Parameters:
+        ----------
+        regions: list
+            List of all regions found in the web page
+
+        '''
+        if not os.path.exists("raw_data"):
+            os.makedirs("raw_data")
+        if not os.path.exists("raw_data\images"):
+            os.makedirs("raw_data\images")
+        for r in regions:
+            if not os.path.exists("raw_data\images\\" + r.text):
+                os.makedirs("raw_data\images\\" + r.text)
+
+    def find_all_links(self, URL):
         '''
         Finds all the links of each team in each region from the given webpage
         
@@ -177,7 +204,7 @@ class scraper:
         content = self.driver.find_element(by=By.XPATH, value='//*[@id="mw-content-text"]')
         image_link = content.find_element(by=By.CLASS_NAME, value="image")
         link = image_link.get_attribute("href")
-        self.click_link(link)
+        self.__click_link(link)
         image = self.driver.find_element(by=By.CLASS_NAME, value="fullImageLink")
         a_tag = image.find_element(by=By.TAG_NAME, value="a")
         src = a_tag.get_attribute("href")
@@ -235,15 +262,21 @@ class scraper:
         data["Logo Data"] = self.__collect_image_data()
         return data
 
-    def collect_all_data(self):
+    def collect_all_data(self, all_links):
         '''
-        Collects all the teams' data and saves the data to their corresponding files/folders
+        Collects all the teams' data from a list of links to the team's webpages
+        Saves the data collected itno a file named data.json and the images to their respective folders
+
+        Parameters:
+        ----------
+        all_links: list
+            A list of all links collected from the original webpage
 
         '''
         i = 0
         all_data = {}
-        for links in self.all_links:
-            curr_region = self.regions[i].text
+        for links in all_links:
+            curr_region = regions[i].text
             all_data[curr_region] = []
             for link in links:
                 self.__click_link(link)
@@ -253,6 +286,17 @@ class scraper:
             i += 1
         self.__save_text_data(all_data)
 
+    def upload_data_to_bucket(self):
+        s3_client = boto3.client('s3')
+        s3_client.upload_file(file_name, bucket, object_name)
+
 if __name__ == "__main__":
-    s = scraper("https://liquipedia.net/leagueoflegends/Portal:Teams")
-    s.collect_all_data()
+    s = scraper()
+    teams_portal_link = "https://liquipedia.net/leagueoflegends/Portal:Teams"
+
+    regions = s.get_regions(teams_portal_link)
+    s.create_folders(regions)
+
+    all_links = s.find_all_links(teams_portal_link)
+    s.collect_all_data(all_links)
+    
