@@ -4,9 +4,13 @@ import os
 import json
 import urllib.request
 import boto3 
+import pandas
+from datetime import datetime
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from sqlalchemy import create_engine
+
 
 class scraper:
 
@@ -23,10 +27,6 @@ class scraper:
     ----------
     driver: webdriver
         The webdriver used from selenium. In this case, it is a chromedriver.
-    all_links: list
-        A list of lists with each nested list containing all the team links from each region on the webpage.
-    regions: str
-        List of all regions listed on the webpage.
 
     Methods:
     -------
@@ -95,10 +95,10 @@ class scraper:
         '''
         page = requests.get(URL)
         soup = BeautifulSoup(page.text, 'html.parser')
-        regions = soup.find_all(name = "div", attrs = {"class": "panel-box-heading"})
+        regions = [region.text for region in soup.find_all(name = "div", attrs = {"class": "panel-box-heading"})]
         return regions
 
-    def create_folders(self, regions):
+    def __create_folders(self, regions):
         '''
         Creates the necessary folder for the data to be saved in (raw_data, images, and folders named after the regions)
         
@@ -112,11 +112,11 @@ class scraper:
             os.makedirs("raw_data")
         if not os.path.exists("raw_data\images"):
             os.makedirs("raw_data\images")
-        for r in regions:
-            if not os.path.exists("raw_data\images\\" + r.text):
-                os.makedirs("raw_data\images\\" + r.text)
+        for region in regions:
+            if not os.path.exists("raw_data\images\\" + region):
+                os.makedirs("raw_data\images\\" + region)
 
-    def find_all_links(self, URL):
+    def find_all_links(self, URL, regions):
         '''
         Finds all the links of each team in each region from the given webpage
         
@@ -127,14 +127,15 @@ class scraper:
 
         Returns:
         ----------
-        link: list
-            List of lists with each nested list containing all teams from a specific region
+        links: dict
+            Dictionary with keys as the name of region and the values as a list of all teams from said region
 
         '''
         self.__click_link(URL)
         site_content = self.driver.find_element(by=By.XPATH, value='//*[@id="mw-content-text"]')
         region_tables = site_content.find_elements(by=By.CLASS_NAME, value="panel-box-body")
-        links = []
+        index = 0
+        links = {}
         for region in region_tables:
             teams_in_region = []
             team_links = region.find_elements(by=By.CLASS_NAME, value="team-template-text")
@@ -142,7 +143,8 @@ class scraper:
                 a_tag = team.find_element(by=By.TAG_NAME, value='a')
                 link = a_tag.get_attribute('href')
                 teams_in_region.append(link)
-            links.append(teams_in_region)
+            links[regions[index]] = teams_in_region
+            index += 1
         return links
 
     def __collect_team_data(self, soup):
@@ -161,10 +163,21 @@ class scraper:
 
         '''
         side_box = soup.find(name = "div", attrs = {"class": "fo-nttax-infobox"})
-        side_info = side_box.find_all(name = "div", attrs = {"class": "infobox-cell-2"})
+        side_info = [info.text for info in side_box.find_all(name = "div", attrs = {"class": "infobox-cell-2"})]
+        key_list = ["Location", "Region", "Coach", "Manager", "Approx. Total Winnings", "Created"]
         info_dict = {}
-        for info in side_info[0::2]:
-            info_dict[info.text.replace("\xa0", " ")] = side_info[side_info.index(info)+1].text.replace("\xa0", " ")
+        for key in key_list:
+            if (key + ":") in side_info:
+                if key == "Coach" or key == "Manager":
+                    info_dict[key] = side_info[side_info.index(key + ":")+1].split("\xa0")
+                    del info_dict[key][0]
+                elif key == "Approx. Total Winnings":
+                    info_dict[key] = int(side_info[side_info.index(key + ":")+1].replace("$", "").replace(",", ""))
+                    info_dict[key + " ($)"] = info_dict.pop(key)
+                elif key == "Created":
+                    info_dict[key] = side_info[side_info.index(key + ":")+1][-10:]
+                else:
+                    info_dict[key] = side_info[side_info.index(key + ":")+1].replace("\xa0", "")
         return info_dict
     
     def __collect_player_data(self, soup):
@@ -187,8 +200,8 @@ class scraper:
         info_dict = {}
         for player in players:
             p_row = player.find_all("td")
-            player_dict = {"ID": p_row[0].text.replace("\xa0", " "), "Name": p_row[2].text.replace("\xa0", " ")}
-            info_dict[p_row[3].text.replace("\xa0", " ")] = player_dict
+            player_dict = {"ID": p_row[0].text.replace("\xa0", ""), "Name": p_row[2].text.replace("(", "").replace(")", ""), "Join Date": p_row[4].text[10:21].replace("\xa0", "")}
+            info_dict[p_row[3].text.replace("Position:\xa0", "")] = player_dict
         return info_dict
 
     def __collect_image_data(self):
@@ -257,15 +270,41 @@ class scraper:
         soup = BeautifulSoup(page.text, 'html.parser')
         data = {}
         data["ID"] = self.__generate_id()
-        data["Team Data"] = self.__collect_team_data(soup)
-        data["Players Data"] = self.__collect_player_data(soup)
+        data.update(self.__collect_team_data(soup))
+        data.update(self.__collect_player_data(soup))
         data["Logo Data"] = self.__collect_image_data()
+        # print(data)
         return data
 
-    def collect_all_data(self, all_links):
+    def save_to_machine(self, all_links):
         '''
         Collects all the teams' data from a list of links to the team's webpages
-        Saves the data collected itno a file named data.json and the images to their respective folders
+        Saves the data collected into a file named data.json and the images to their respective folders
+
+        Parameters:
+        ----------
+        all_links: dict
+            Dictionary with keys as the name of region and the values as a list of all teams from said region
+
+        '''
+        self.__create_folders(all_links.keys())
+        i = 0
+        all_data = {}
+        for region in all_links:
+            curr_region = list(all_links.keys())[i]
+            all_data[curr_region] = []
+            for team_link in all_links[region]:
+                self.__click_link(team_link)
+                data = self.__collect_data(team_link)
+                self.__save_image_data(data, curr_region)
+                all_data[curr_region].append(data)
+            i += 1
+        self.__save_text_data(all_data)
+    
+    def save_to_database(self, all_links):
+        '''
+        Collects all the teams' data from a list of links to the team's webpages
+        Saves the data collected onto an AWS RDS database using sqlalchemy
 
         Parameters:
         ----------
@@ -273,30 +312,81 @@ class scraper:
             A list of all links collected from the original webpage
 
         '''
+        DATABASE_TYPE = 'postgresql'
+        DBAPI = 'psycopg2'
+        ENDPOINT = 'lol-team-database.ckzvrpsnhpk2.eu-west-2.rds.amazonaws.com'
+        USER = 'postgres'
+        PASSWORD = 'Cosamona94'
+        PORT = 5432
+        DATABASE = 'postgres'
+        engine = create_engine(f"{DATABASE_TYPE}+{DBAPI}://{USER}:{PASSWORD}@{ENDPOINT}:{PORT}/{DATABASE}")
+        engine.connect()
         i = 0
         all_data = {}
-        for links in all_links:
-            curr_region = regions[i].text
+        for region in all_links:
+            curr_region = list(all_links.keys())[i]
             all_data[curr_region] = []
-            for link in links:
-                self.__click_link(link)
-                data = self.__collect_data(link)
-                self.__save_image_data(data, curr_region)
+            for team_link in all_links[region]:
+                self.__click_link(team_link)
+                data = self.__collect_data(team_link)
                 all_data[curr_region].append(data)
             i += 1
-        self.__save_text_data(all_data)
+            df = pandas.DataFrame(data)
+            print(df)
+    
+    def test(self, all_links):
+        i = 0
+        all_data = {}
+        for region in all_links:
+            curr_region = list(all_links.keys())[i]
+            all_data[curr_region] = []
+            pandas_data = {}
+            for team_link in all_links[region]:
+                self.__click_link(team_link)
+                data = self.__collect_data(team_link)
+                all_data[curr_region].append(data)
+                for key, value in data.items():
+                    if key not in pandas_data:
+                        pandas_data[key] = [value]
+                    else:  
+                        pandas_data[key].append(value)
+                    print(pandas_data.items())
+            i += 1
+            df = pandas.DataFrame(all_data)
+            print(df)
+        pandas_data = {"Region" : [], "ID" : [], "Players" : {1: 1, 2 : 3}}
+        df = pandas.DataFrame(pandas_data)
+        print(df)
+            
 
-    def upload_data_to_bucket(self):
+
+    def upload_data_to_bucket(self, bucket_name):
+        '''
+        Uploads the data.json file and images to their respective folders in an s3 bucket 
+
+        Parameters:
+        ----------
+        bucket_name: str
+            The name of the s3 bucket the files are uploaded into
+
+        '''
         s3_client = boto3.client('s3')
-        s3_client.upload_file(file_name, bucket, object_name)
+        s3_client.upload_file("raw_data\data.json", bucket_name, "data.json")
+        for folder_name in os.listdir("raw_data\images\\"):
+            s3_client.put_object(Bucket = bucket_name, Key = ("images/" + folder_name + "/"))
+            for image in os.listdir("raw_data\images\\" + folder_name):
+                s3_client.upload_file("raw_data\images\\" + folder_name + "\\" + image, bucket_name, "images/" + folder_name + "/" + image)
 
 if __name__ == "__main__":
     s = scraper()
     teams_portal_link = "https://liquipedia.net/leagueoflegends/Portal:Teams"
 
     regions = s.get_regions(teams_portal_link)
-    s.create_folders(regions)
+    
+    all_links = s.find_all_links(teams_portal_link, regions)
 
-    all_links = s.find_all_links(teams_portal_link)
-    s.collect_all_data(all_links)
+    s.test(all_links)
+    # s.save_to_machine(all_links)
+    # s.save_to_database(all_links)
+    # s.upload_data_to_bucket("lol-team-data-scraper")
     
