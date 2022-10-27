@@ -5,12 +5,13 @@ import json
 import urllib.request
 import boto3 
 import pandas
-from datetime import datetime
+import time
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from sqlalchemy import create_engine
-
+from sqlalchemy import inspect
+from selenium.webdriver.chrome.options import Options
 
 class scraper:
 
@@ -64,7 +65,12 @@ class scraper:
             Webpage that the data is collected from
 
         '''
-        self.driver = webdriver.Chrome()
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        self.driver = webdriver.Chrome('C:/Users/joeln/miniconda3/chromedriver',chrome_options=chrome_options)
+        # self.driver = webdriver.Chrome("C:/Users/joeln/miniconda3/chromedriver", chrome_options=chrome_options)
 
     def __click_link(self, URL):
         '''
@@ -225,7 +231,7 @@ class scraper:
 
     def __generate_id(self):
         '''
-        Generates a unique 
+        Generates a unique ID
          
         Returns:
         ----------
@@ -241,7 +247,7 @@ class scraper:
         Saves the logo of the team to a folder with the respective region of the team
 
         '''
-        urllib.request.urlretrieve(data["Logo Data"], "raw_data\images\\" + region  + "\\" + data["ID"][0] + ".png")
+        urllib.request.urlretrieve(data["Logo Data"], "raw_data\images\\" + region  + "\\" + data["ID"] + ".png")
 
     def __save_text_data(self, all_data):
         '''
@@ -269,11 +275,11 @@ class scraper:
         page = requests.get(URL)
         soup = BeautifulSoup(page.text, 'html.parser')
         data = {}
-        data["ID"] = self.__generate_id()
+        data["ID"] = self.driver.find_element(by=By.XPATH, value='//*[@id="firstHeading"]').text
+        data["UUID4"] = str(uuid.uuid4())
         data.update(self.__collect_team_data(soup))
         data.update(self.__collect_player_data(soup))
         data["Logo Data"] = self.__collect_image_data()
-        # print(data)
         return data
 
     def save_to_machine(self, all_links):
@@ -294,6 +300,7 @@ class scraper:
             curr_region = list(all_links.keys())[i]
             all_data[curr_region] = []
             for team_link in all_links[region]:
+                time.sleep(2)
                 self.__click_link(team_link)
                 data = self.__collect_data(team_link)
                 self.__save_image_data(data, curr_region)
@@ -314,6 +321,48 @@ class scraper:
         '''
         DATABASE_TYPE = 'postgresql'
         DBAPI = 'psycopg2'
+        ENDPOINT = 'lol-teams-database.ckzvrpsnhpk2.eu-west-2.rds.amazonaws.com'
+        USER = 'postgres'
+        PASSWORD = 'liquipedia'
+        PORT = 5432
+        DATABASE = 'postgres'
+        engine = create_engine(f"{DATABASE_TYPE}+{DBAPI}://{USER}:{PASSWORD}@{ENDPOINT}:{PORT}/{DATABASE}")
+        inspector = inspect(engine)
+        i = 0
+        all_data = {}
+        all_pandas_data = pandas.DataFrame()
+        for region in all_links:
+            curr_region = list(all_links.keys())[i]
+            all_data[curr_region] = []
+            existing_teams = engine.execute('''SELECT ID FROM ''' + curr_region).fetchall()
+            for team_link in all_links[region]:
+                time.sleep(2)
+                self.__click_link(team_link)
+                team_name = self.driver.find_element(by=By.XPATH, value='//*[@id="firstHeading"]').text
+                if team_name not in existing_teams:
+                    data = self.__collect_data(team_link)
+                    all_data[curr_region].append(data)
+                else:
+                    existing_data = engine.execute('''SELECT * FROM ''' + curr_region + '''WHERE ID = ''' + team_name).fetchall()
+                    all_data[curr_region].append(existing_data)
+            i += 1 
+            df = pandas.DataFrame(all_data[curr_region])
+            all_pandas_data = pandas.concat([all_pandas_data, df])
+        all_pandas_data.to_sql("league_of_legends_teams", engine, if_exists="replace")
+    
+    def test(self):
+        '''
+        Collects all the teams' data from a list of links to the team's webpages
+        Saves the data collected onto an AWS RDS database using sqlalchemy
+
+        Parameters:
+        ----------
+        all_links: list
+            A list of all links collected from the original webpage
+
+        '''
+        DATABASE_TYPE = 'postgresql'
+        DBAPI = 'psycopg2'
         ENDPOINT = 'lol-team-database.ckzvrpsnhpk2.eu-west-2.rds.amazonaws.com'
         USER = 'postgres'
         PASSWORD = 'Cosamona94'
@@ -321,44 +370,7 @@ class scraper:
         DATABASE = 'postgres'
         engine = create_engine(f"{DATABASE_TYPE}+{DBAPI}://{USER}:{PASSWORD}@{ENDPOINT}:{PORT}/{DATABASE}")
         engine.connect()
-        i = 0
-        all_data = {}
-        for region in all_links:
-            curr_region = list(all_links.keys())[i]
-            all_data[curr_region] = []
-            for team_link in all_links[region]:
-                self.__click_link(team_link)
-                data = self.__collect_data(team_link)
-                all_data[curr_region].append(data)
-            i += 1
-            df = pandas.DataFrame(data)
-            print(df)
-    
-    def test(self, all_links):
-        i = 0
-        all_data = {}
-        for region in all_links:
-            curr_region = list(all_links.keys())[i]
-            all_data[curr_region] = []
-            pandas_data = {}
-            for team_link in all_links[region]:
-                self.__click_link(team_link)
-                data = self.__collect_data(team_link)
-                all_data[curr_region].append(data)
-                for key, value in data.items():
-                    if key not in pandas_data:
-                        pandas_data[key] = [value]
-                    else:  
-                        pandas_data[key].append(value)
-                    print(pandas_data.items())
-            i += 1
-            df = pandas.DataFrame(all_data)
-            print(df)
-        pandas_data = {"Region" : [], "ID" : [], "Players" : {1: 1, 2 : 3}}
-        df = pandas.DataFrame(pandas_data)
-        print(df)
-            
-
+        engine.execute('''SELECT * FROM actor''').fetchall()
 
     def upload_data_to_bucket(self, bucket_name):
         '''
@@ -385,8 +397,8 @@ if __name__ == "__main__":
     
     all_links = s.find_all_links(teams_portal_link, regions)
 
-    s.test(all_links)
-    # s.save_to_machine(all_links)
+    # s.test(all_links)
+    s.save_to_machine(all_links)
     # s.save_to_database(all_links)
     # s.upload_data_to_bucket("lol-team-data-scraper")
     
